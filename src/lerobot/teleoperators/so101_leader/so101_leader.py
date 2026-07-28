@@ -280,7 +280,7 @@ class SO101Leader(Teleoperator):
 
     def get_action(self) -> dict[str, float]:
         start = time.perf_counter()
-        action = self.bus.sync_read("Present_Position")
+        action = self.bus.sync_read("Present_Position", num_retry=5)
         action = {f"{motor}.pos": val for motor, val in action.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read action: {dt_ms:.1f}ms")
@@ -289,6 +289,22 @@ class SO101Leader(Teleoperator):
     def send_feedback(self, feedback: dict[str, float]) -> None:
         # TODO(rcadene, aliberts): Implement force feedback
         raise NotImplementedError
+
+    def enable_torque(self) -> None:
+        self.bus.enable_torque(num_retry=5)
+
+    def disable_torque(self) -> None:
+        self.bus.disable_torque(num_retry=5)
+
+    def write_goal_positions(self, goal_positions: dict[str, float]) -> None:
+        """Write goal positions to mirror another arm's pose onto the leader."""
+        goal_pos = {
+            key.removesuffix(".pos"): val
+            for key, val in goal_positions.items()
+            if key.endswith(".pos")
+        }
+        if goal_pos:
+            self.bus.sync_write("Goal_Position", goal_pos)
 
     def disconnect(self) -> None:
         if not self.is_connected:

@@ -43,9 +43,11 @@ from .gym_action_processor import (
 from .hil_processor import (
     AddTeleopActionAsComplimentaryDataStep,
     AddTeleopEventsAsInfoStep,
+    ApplyEEPolicyActionPipelineStep,
     GripperPenaltyProcessorStep,
     ImageCropResizeProcessorStep,
     InterventionActionProcessorStep,
+    LeaderInterventionActionProcessorStep,
     RewardClassifierProcessorStep,
     TimeLimitProcessorStep,
 )
@@ -75,12 +77,14 @@ from .policy_robot_bridge import (
     RobotActionToPolicyActionProcessorStep,
 )
 from .rename_processor import RenameObservationsProcessorStep
+from .relative_action_processor import AbsoluteActionsProcessorStep, RelativeActionsProcessorStep
 from .tokenizer_processor import TokenizerProcessorStep
 
 __all__ = [
     "ActionProcessorStep",
     "AddTeleopActionAsComplimentaryDataStep",
     "AddTeleopEventsAsInfoStep",
+    "ApplyEEPolicyActionPipelineStep",
     "ComplementaryDataProcessorStep",
     "batch_to_transition",
     "create_transition",
@@ -94,6 +98,7 @@ __all__ = [
     "ImageCropResizeProcessorStep",
     "InfoProcessorStep",
     "InterventionActionProcessorStep",
+    "LeaderInterventionActionProcessorStep",
     "JointVelocityProcessorStep",
     "make_default_processors",
     "make_default_teleop_action_processor",
@@ -120,6 +125,8 @@ __all__ = [
     "DataProcessorPipeline",
     "TimeLimitProcessorStep",
     "AddBatchDimensionProcessorStep",
+    "AbsoluteActionsProcessorStep",
+    "RelativeActionsProcessorStep",
     "RobotProcessorPipeline",
     "TokenizerProcessorStep",
     "Torch2NumpyActionProcessorStep",

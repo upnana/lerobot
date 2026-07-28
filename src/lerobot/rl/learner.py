@@ -69,8 +69,11 @@ from lerobot.policies.sac.modeling_sac import SACPolicy
 from lerobot.rl.buffer import ReplayBuffer, concatenate_batch_transitions
 from lerobot.rl.process import ProcessSignalHandler
 from lerobot.rl.wandb_utils import WandBLogger
-from lerobot.robots import so100_follower  # noqa: F401
+from lerobot.robots import so100_follower, so101_follower  # noqa: F401
 from lerobot.teleoperators import gamepad, so101_leader  # noqa: F401
+from lerobot.teleoperators.keyboard.configuration_keyboard import (  # noqa: F401
+    KeyboardEndEffectorTeleopConfig,
+)
 from lerobot.teleoperators.utils import TeleopEvents
 from lerobot.transport import services_pb2_grpc
 from lerobot.transport.utils import (
@@ -1163,9 +1166,11 @@ def process_transitions(
             replay_buffer.add(**transition)
 
             # Add to offline buffer if it's an intervention
-            if dataset_repo_id is not None and transition.get("complementary_info", {}).get(
+            complementary = transition.get("complementary_info", {}) or {}
+            is_intervention = complementary.get(TeleopEvents.IS_INTERVENTION.value) or complementary.get(
                 TeleopEvents.IS_INTERVENTION
-            ):
+            )
+            if dataset_repo_id is not None and is_intervention:
                 offline_replay_buffer.add(**transition)
 
 

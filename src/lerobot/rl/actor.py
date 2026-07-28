@@ -50,6 +50,7 @@ import logging
 import os
 import time
 from functools import lru_cache
+from pathlib import Path
 from queue import Empty
 
 import grpc
@@ -65,8 +66,8 @@ from lerobot.policies.sac.modeling_sac import SACPolicy
 from lerobot.processor import TransitionKey
 from lerobot.rl.process import ProcessSignalHandler
 from lerobot.rl.queue import get_last_item_from_queue
-from lerobot.robots import so100_follower  # noqa: F401
-from lerobot.teleoperators import gamepad, so101_leader  # noqa: F401
+from lerobot.robots import so100_follower, so101_follower  # noqa: F401
+from lerobot.teleoperators import gamepad, keyboard, so101_leader  # noqa: F401
 from lerobot.teleoperators.utils import TeleopEvents
 from lerobot.transport import services_pb2, services_pb2_grpc
 from lerobot.transport.utils import (
@@ -77,6 +78,7 @@ from lerobot.transport.utils import (
     send_bytes_in_chunks,
     transitions_to_bytes,
 )
+from lerobot.utils.constants import CHECKPOINTS_DIR, LAST_CHECKPOINT_LINK, PRETRAINED_MODEL_DIR
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.robot_utils import precise_sleep
 from lerobot.utils.transition import (
@@ -91,11 +93,40 @@ from lerobot.utils.utils import (
 )
 
 from .gym_manipulator import (
+    _log_transition_to_rerun,
     create_transition,
     make_processors,
     make_robot_env,
     step_env_and_process_transition,
 )
+from lerobot.utils.visualization_utils import init_rerun
+
+
+def _learner_action_from_transition(
+    policy_action: torch.Tensor,
+    teleop_action,
+    *,
+    is_intervention: bool,
+) -> torch.Tensor:
+    """Convert the executed step into the 3D policy action tensor expected by the learner."""
+    if not is_intervention:
+        return policy_action.detach().cpu()
+
+    if isinstance(teleop_action, torch.Tensor):
+        return teleop_action.detach().cpu().reshape(-1)[:3].float()
+
+    if isinstance(teleop_action, dict) and {"delta_x", "delta_y", "delta_z"}.issubset(teleop_action):
+        return torch.tensor(
+            [
+                float(teleop_action["delta_x"]),
+                float(teleop_action["delta_y"]),
+                float(teleop_action["delta_z"]),
+            ],
+            dtype=torch.float32,
+        )
+
+    # Leader joints without kinematics conversion: fall back to policy-format action.
+    return policy_action.detach().cpu()
 
 # Main entry point
 
@@ -237,8 +268,22 @@ def act_with_policy(
 
     logging.info("make_env online")
 
+    # Start / reconnect Rerun BEFORE opening cameras so a spawned viewer never
+    # inherits V4L file descriptors (otherwise leftover Rerun keeps cameras busy).
+    use_rerun = bool(
+        cfg.env.processor.observation is not None and cfg.env.processor.observation.display_cameras
+    )
+    if use_rerun:
+        logging.info("[ACTOR] Starting Rerun viewer (display_cameras=true)")
+        print("Rerun display on — keep the window open across actor restarts")
+        print("  paths: observation.cameras.front / observation.cameras.wrist")
+        init_rerun(session_name="hilserl_actor")
+
     online_env, teleop_device = make_robot_env(cfg=cfg.env)
     env_processor, action_processor = make_processors(online_env, teleop_device, cfg.env, cfg.policy.device)
+
+    if use_rerun and hasattr(online_env, "display_cameras"):
+        online_env.display_cameras = False  # prefer Rerun over OpenCV windows
 
     set_seed(cfg.seed)
     device = get_safe_torch_device(cfg.policy.device, log=True)
@@ -248,15 +293,22 @@ def act_with_policy(
 
     logging.info("make_policy")
 
-    ### Instantiate the policy in both the actor and learner processes
-    ### To avoid sending a SACPolicy object through the port, we create a policy instance
-    ### on both sides, the learner sends the updated parameters every n steps to update the actor's parameters
+    checkpoint_dir = Path(cfg.output_dir) / CHECKPOINTS_DIR / LAST_CHECKPOINT_LINK / PRETRAINED_MODEL_DIR
+    if checkpoint_dir.is_dir():
+        cfg.policy.pretrained_path = checkpoint_dir
+        logging.info(f"[ACTOR] Restoring policy from checkpoint: {checkpoint_dir}")
+
     policy: SACPolicy = make_policy(
         cfg=cfg.policy,
         env_cfg=cfg.env,
     )
     policy = policy.eval()
     assert isinstance(policy, nn.Module)
+
+    # Prefer the latest weights streamed from the learner (may override checkpoint).
+    for _ in range(20):
+        update_policy_parameters(policy=policy, parameters_queue=parameters_queue, device=device)
+        time.sleep(0.25)
 
     obs, info = online_env.reset()
     env_processor.reset()
@@ -301,7 +353,11 @@ def act_with_policy(
             action=action,
             env_processor=env_processor,
             action_processor=action_processor,
+            teleop_device=teleop_device,
         )
+
+        if use_rerun:
+            _log_transition_to_rerun(new_transition, env=online_env, step=interaction_step)
 
         # Extract values from processed transition
         next_observation = {
@@ -310,9 +366,15 @@ def act_with_policy(
             if k in cfg.policy.input_features
         }
 
-        # Teleop action is the action that was executed in the environment
-        # It is either the action from the teleop device or the action from the policy
-        executed_action = new_transition[TransitionKey.COMPLEMENTARY_DATA]["teleop_action"]
+        # Store the executed action in policy action space (3D EE deltas), not raw teleop joints.
+        intervention_info = new_transition[TransitionKey.INFO]
+        is_intervention = intervention_info.get(TeleopEvents.IS_INTERVENTION, False)
+        teleop_action = new_transition[TransitionKey.COMPLEMENTARY_DATA].get("teleop_action")
+        executed_action = _learner_action_from_transition(
+            policy_action=action,
+            teleop_action=teleop_action,
+            is_intervention=is_intervention,
+        )
 
         reward = new_transition[TransitionKey.REWARD]
         done = new_transition.get(TransitionKey.DONE, False)
@@ -322,8 +384,7 @@ def act_with_policy(
         episode_total_steps += 1
 
         # Check for intervention from transition info
-        intervention_info = new_transition[TransitionKey.INFO]
-        if intervention_info.get(TeleopEvents.IS_INTERVENTION, False):
+        if is_intervention:
             episode_intervention = True
             episode_intervention_steps += 1
 
@@ -331,6 +392,8 @@ def act_with_policy(
             "discrete_penalty": torch.tensor(
                 [new_transition[TransitionKey.COMPLEMENTARY_DATA].get("discrete_penalty", 0.0)]
             ),
+            # Use the string value (not the Enum member) so torch.load(weights_only=True) works.
+            TeleopEvents.IS_INTERVENTION.value: int(is_intervention),
         }
         # Create transition for learner (convert to old format)
         list_transition_to_send_to_learner.append(

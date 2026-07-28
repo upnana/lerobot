@@ -49,6 +49,11 @@ class PI05Config(PreTrainedConfig):
     min_period: float = 4e-3
     max_period: float = 4.0
 
+    # Relative actions (OpenPI / alohamini-compatible checkpoints)
+    use_relative_actions: bool = False
+    relative_exclude_joints: list[str] = field(default_factory=lambda: ["gripper"])
+    action_feature_names: list[str] | None = None
+
     # Real-Time Chunking (RTC) configuration
     rtc_config: RTCConfig | None = None
 
@@ -75,6 +80,13 @@ class PI05Config(PreTrainedConfig):
     compile_model: bool = False  # Whether to use torch.compile for model optimization
     compile_mode: str = "max-autotune"  # Torch compile mode
     device: str | None = None  # Device to use for the model (None = auto-detect)
+    freeze_vision_encoder: bool = False
+    train_expert_only: bool = False
+
+    # Checkpoint compatibility (alohamini / custom training)
+    use_peft: bool = False
+    pretrained_revision: str | None = None
+    tokenizer_path: str | None = None
 
     # Optimizer settings: see openpi `AdamW`
     optimizer_lr: float = 2.5e-5  # see openpi `CosineDecaySchedule: peak_lr`
@@ -89,8 +101,6 @@ class PI05Config(PreTrainedConfig):
     scheduler_warmup_steps: int = 1_000
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
-
-    tokenizer_max_length: int = 200  # see openpi `__post_init__`
 
     def __post_init__(self):
         super().__post_init__()

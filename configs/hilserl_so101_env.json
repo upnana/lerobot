@@ -1,0 +1,89 @@
+{
+  "env": {
+    "name": "real_robot",
+    "fps": 10,
+    "task": "push the black block",
+    "robot": {
+      "type": "so101_follower",
+      "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6083854-if00",
+      "id": "so101_follower",
+      "use_degrees": true,
+      "cameras": {
+        "front": {
+          "type": "opencv",
+          "index_or_path": "/dev/v4l/by-id/usb-UGREEN_Camera_2K_UGREEN_Camera_2K_SN0001-video-index0",
+          "width": 640,
+          "height": 480,
+          "fps": 30,
+          "fourcc": "MJPG",
+          "warmup_s": 5
+        },
+        "wrist": {
+          "type": "opencv",
+          "index_or_path": "/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._USB2.0_CAM1_USB2.0_CAM1-video-index0",
+          "width": 640,
+          "height": 480,
+          "fps": 30,
+          "fourcc": "MJPG",
+          "warmup_s": 5
+        }
+      }
+    },
+    "teleop": {
+      "type": "so101_leader",
+      "port": "/dev/serial/by-id/usb-1a86_USB_Single_Serial_5AE6084864-if00",
+      "id": "so101_leader",
+      "use_degrees": true
+    },
+    "processor": {
+      "control_mode": "leader",
+      "max_gripper_pos": 30,
+      "observation": {
+        "add_joint_velocity_to_observation": true,
+        "add_current_to_observation": false,
+        "display_cameras": true
+      },
+      "image_preprocessing": {
+        "crop_params_dict": {},
+        "resize_size": [128, 128]
+      },
+      "gripper": {
+        "use_gripper": true,
+        "gripper_penalty": -0.02
+      },
+      "reset": {
+        "fixed_reset_joint_positions": [-5.1, -102.5, 97.5, 71.8, 0.0, 3.0],
+        "reset_time_s": 5.0,
+        "control_time_s": 90.0,
+        "terminate_on_success": true
+      },
+      "inverse_kinematics": {
+        "urdf_path": "/home/rxn/SO-ARM100/Simulation/SO101/so101_new_calib.urdf",
+        "target_frame_name": "gripper_frame_link",
+        "end_effector_bounds": {
+          "min": [0.1178, -0.1125, 0.028],
+          "max": [0.4429, 0.1033, 0.0616]
+        },
+        "end_effector_step_sizes": {
+          "x": 0.015,
+          "y": 0.015,
+          "z": 0.015
+        },
+        "max_ee_step_m": 0.02,
+        "joint_position_bounds": {
+          "shoulder_pan": {"min": -25.0, "max": 15.0},
+          "wrist_roll": {"min": -20.0, "max": 20.0}
+        }
+      }
+    }
+  },
+  "dataset": {
+    "repo_id": "my_rl/push_black_block_demos",
+    "root": "/home/rxn/datasets/hilserl_push_black_block_demos",
+    "task": "push the black block",
+    "num_episodes_to_record": 15,
+    "push_to_hub": false
+  },
+  "mode": "record",
+  "device": "cpu"
+}

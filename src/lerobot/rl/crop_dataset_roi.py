@@ -28,6 +28,25 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import DONE, REWARD
 
 
+def cv2_gui_available() -> bool:
+    try:
+        cv2.namedWindow("__roi_test__", cv2.WINDOW_AUTOSIZE)
+        cv2.destroyWindow("__roi_test__")
+        return True
+    except cv2.error:
+        return False
+
+
+def export_preview_images(images: dict, output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for key, img in images.items():
+        if img is None:
+            continue
+        preview_path = output_dir / f"{key.replace('.', '_')}.png"
+        cv2.imwrite(str(preview_path), img)
+        print(f"  Saved preview: {preview_path} ({img.shape[1]}x{img.shape[0]})")
+
+
 def select_rect_roi(img):
     """
     Allows the user to draw a rectangular ROI on the image.
@@ -237,6 +256,7 @@ def convert_lerobot_dataset_to_cropped_lerobot_dataset(
 
     # Save the last episode
     new_dataset.save_episode()
+    new_dataset.finalize()
 
     if push_to_hub:
         new_dataset.push_to_hub()
@@ -290,6 +310,20 @@ if __name__ == "__main__":
     images = {k: (v * 255).astype("uint8") for k, v in images.items()}
 
     if args.crop_params_path is None:
+        if not cv2_gui_available():
+            preview_dir = Path(args.root or ".") / "meta" / "crop_previews"
+            print("\nOpenCV GUI is unavailable (headless opencv or no display).")
+            print("Saved preview frames for manual ROI selection:")
+            export_preview_images(images, preview_dir)
+            print("\nCreate a JSON file with ROI per camera key:")
+            print('  {"observation.images.front": [top, left, height, width], ...}')
+            print("\nThen rerun with:")
+            print(
+                "  python -m lerobot.rl.crop_dataset_roi "
+                f"--repo-id {args.repo_id} --root {args.root} --crop-params-path /path/to/crop.json"
+            )
+            print("\nOr use: bash crop_hilserl_demos.sh")
+            raise SystemExit(1)
         rois = select_square_roi_for_images(images)
     else:
         with open(args.crop_params_path) as f:

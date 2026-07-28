@@ -171,6 +171,7 @@ class RewardClassifierConfig:
     pretrained_path: str | None = None
     success_threshold: float = 0.5
     success_reward: float = 1.0
+    terminate_on_success: bool | None = None
 
 
 @dataclass
@@ -181,6 +182,10 @@ class InverseKinematicsConfig:
     target_frame_name: str | None = None
     end_effector_bounds: dict[str, list[float]] | None = None
     end_effector_step_sizes: dict[str, float] | None = None
+    max_ee_step_m: float = 0.12
+    # Optional per-joint position clip after IK / leader teleop, e.g.
+    # {"wrist_roll": {"min": -20.0, "max": 20.0}} (degrees if use_degrees=true).
+    joint_position_bounds: dict[str, dict[str, float]] | None = None
 
 
 @dataclass
@@ -222,6 +227,10 @@ class HILSerlProcessorConfig:
     inverse_kinematics: InverseKinematicsConfig | None = None
     reward_classifier: RewardClassifierConfig | None = None
     max_gripper_pos: float | None = 100.0
+    # When True, policy output is ignored unless human is intervening (keyboard/gamepad).
+    freeze_policy_without_intervention: bool = False
+    # When True, leader arm tracks follower joints when not intervening (off by default).
+    mirror_leader_on_follower: bool = False
 
 
 @EnvConfig.register_subclass(name="gym_manipulator")

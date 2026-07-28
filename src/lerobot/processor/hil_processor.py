@@ -15,18 +15,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import numpy as np
 import torch
 import torchvision.transforms.functional as F  # noqa: N812
 
+logger = logging.getLogger(__name__)
+
 from lerobot.configs.types import PipelineFeatureType, PolicyFeature
+from lerobot.model.kinematics import RobotKinematics
+from lerobot.processor.converters import batch_to_transition, transition_to_batch
 from lerobot.teleoperators.teleoperator import Teleoperator
 from lerobot.teleoperators.utils import TeleopEvents
+from lerobot.utils.constants import OBS_IMAGE
 
 from .core import EnvTransition, PolicyAction, TransitionKey
 from .pipeline import (
@@ -41,6 +47,19 @@ from .pipeline import (
 GRIPPER_KEY = "gripper"
 DISCRETE_PENALTY_KEY = "discrete_penalty"
 TELEOP_ACTION_KEY = "teleop_action"
+LEADER_JOINT_ACTION_KEY = "leader_joint_action"
+
+
+def _is_joint_action_dict(action: Any) -> bool:
+    return isinstance(action, dict) and any(isinstance(k, str) and k.endswith(".pos") for k in action)
+
+
+def _joint_dict_from_teleop(teleop_action: dict[str, Any], motor_names: list[str]) -> dict[str, float]:
+    return {f"{name}.pos": float(teleop_action[f"{name}.pos"]) for name in motor_names}
+
+
+def _joint_dict_from_observation(observation: dict[str, Any], motor_names: list[str]) -> dict[str, float]:
+    return {f"{name}.pos": float(observation[f"{name}.pos"]) for name in motor_names}
 
 
 @runtime_checkable
@@ -85,7 +104,7 @@ def _check_teleop_with_events(teleop: Teleoperator) -> None:
     if not isinstance(teleop, HasTeleopEvents):
         raise TypeError(
             f"Teleoperator {type(teleop).__name__} must implement get_teleop_events() method. "
-            f"Compatible teleoperators: GamepadTeleop, KeyboardEndEffectorTeleop"
+            f"Compatible teleoperators: GamepadTeleop, KeyboardEndEffectorTeleop, SO101LeaderHILAdapter"
         )
 
 
@@ -117,7 +136,13 @@ class AddTeleopActionAsComplimentaryDataStep(ComplementaryDataProcessorStep):
             `teleop_action` key.
         """
         new_complementary_data = dict(complementary_data)
-        new_complementary_data[TELEOP_ACTION_KEY] = self.teleop_device.get_action()
+        try:
+            new_complementary_data[TELEOP_ACTION_KEY] = self.teleop_device.get_action()
+        except ConnectionError as exc:
+            logger.warning("teleop get_action failed this step (continuing): %s", exc)
+            # Keep previous teleop action if present; otherwise empty dict (no intervention override).
+            if TELEOP_ACTION_KEY not in new_complementary_data:
+                new_complementary_data[TELEOP_ACTION_KEY] = {}
         return new_complementary_data
 
     def transform_features(
@@ -408,6 +433,7 @@ class InterventionActionProcessorStep(ProcessorStep):
 
     use_gripper: bool = False
     terminate_on_success: bool = True
+    freeze_policy_without_intervention: bool = False
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         """
@@ -435,8 +461,14 @@ class InterventionActionProcessorStep(ProcessorStep):
 
         new_transition = transition.copy()
 
+        # Hold still when not intervening (avoids untrained policy moving the robot).
+        if not is_intervention and self.freeze_policy_without_intervention:
+            frozen_action = torch.zeros_like(action)
+            if self.use_gripper and frozen_action.shape[-1] > 3:
+                frozen_action[..., 3] = 1.0
+            new_transition[TransitionKey.ACTION] = frozen_action
         # Override action if intervention is active
-        if is_intervention and teleop_action is not None:
+        elif is_intervention and teleop_action is not None:
             if isinstance(teleop_action, dict):
                 # Convert teleop_action dict to tensor format
                 action_list = [
@@ -492,6 +524,142 @@ class InterventionActionProcessorStep(ProcessorStep):
         return features
 
 
+@ProcessorStepRegistry.register("leader_intervention_action_processor")
+@dataclass
+class LeaderInterventionActionProcessorStep(ProcessorStep):
+    """Handle HIL interventions using SO101 leader joint targets.
+
+    Robot execution uses leader joint targets. For learning/recording, when kinematics
+    are available, also convert consecutive leader poses into HIL-SERL EE delta actions
+    (same space as keyboard/gamepad teleop).
+    """
+
+    motor_names: list[str]
+    use_gripper: bool = False
+    terminate_on_success: bool = True
+    freeze_policy_without_intervention: bool = False
+    kinematics: RobotKinematics | None = None
+    end_effector_step_sizes: dict[str, float] | None = None
+    gripper_delta_threshold: float = 1.0
+    _prev_ee_pos: np.ndarray | None = field(default=None, init=False, repr=False)
+    _prev_gripper_pos: float | None = field(default=None, init=False, repr=False)
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        action = transition.get(TransitionKey.ACTION)
+        if not isinstance(action, PolicyAction):
+            raise ValueError(f"Action should be a PolicyAction type got {type(action)}")
+
+        info = transition.get(TransitionKey.INFO, {})
+        complementary_data = transition.get(TransitionKey.COMPLEMENTARY_DATA, {})
+        teleop_action = complementary_data.get(TELEOP_ACTION_KEY, {})
+        is_intervention = info.get(TeleopEvents.IS_INTERVENTION, False)
+        terminate_episode = info.get(TeleopEvents.TERMINATE_EPISODE, False)
+        success = info.get(TeleopEvents.SUCCESS, False)
+        rerecord_episode = info.get(TeleopEvents.RERECORD_EPISODE, False)
+
+        new_transition = transition.copy()
+        new_complementary_data = dict(complementary_data)
+
+        if is_intervention and _is_joint_action_dict(teleop_action):
+            new_transition[TransitionKey.ACTION] = _joint_dict_from_teleop(teleop_action, self.motor_names)
+            new_complementary_data[LEADER_JOINT_ACTION_KEY] = True
+        elif not is_intervention and self.freeze_policy_without_intervention:
+            observation = transition.get(TransitionKey.OBSERVATION, {})
+            new_transition[TransitionKey.ACTION] = _joint_dict_from_observation(observation, self.motor_names)
+            new_complementary_data[LEADER_JOINT_ACTION_KEY] = True
+        else:
+            new_complementary_data[LEADER_JOINT_ACTION_KEY] = False
+
+        # Always expose EE deltas for recording/learner when leader reports joints.
+        if _is_joint_action_dict(teleop_action):
+            ee_action = self._joints_to_ee_delta_action(teleop_action)
+            record_action = ee_action if ee_action is not None else teleop_action
+        else:
+            record_action = teleop_action
+
+        new_transition[TransitionKey.DONE] = bool(terminate_episode) or (
+            self.terminate_on_success and success
+        )
+        new_transition[TransitionKey.REWARD] = float(success)
+
+        info = new_transition.get(TransitionKey.INFO, {})
+        info[TeleopEvents.IS_INTERVENTION] = is_intervention
+        info[TeleopEvents.RERECORD_EPISODE] = rerecord_episode
+        info[TeleopEvents.SUCCESS] = success
+        new_transition[TransitionKey.INFO] = info
+        new_complementary_data[TELEOP_ACTION_KEY] = record_action
+        new_transition[TransitionKey.COMPLEMENTARY_DATA] = new_complementary_data
+        return new_transition
+
+    def _joints_to_ee_delta_action(self, teleop_action: dict[str, Any]) -> torch.Tensor | None:
+        if self.kinematics is None or self.end_effector_step_sizes is None:
+            return None
+
+        q = np.array(
+            [float(teleop_action[f"{name}.pos"]) for name in self.motor_names],
+            dtype=float,
+        )
+        ee_pos = self.kinematics.forward_kinematics(q)[:3, 3]
+        if self._prev_ee_pos is None:
+            delta_m = np.zeros(3, dtype=float)
+        else:
+            delta_m = ee_pos - self._prev_ee_pos
+        self._prev_ee_pos = ee_pos.copy()
+
+        step_sizes = self.end_effector_step_sizes
+        action_list = [
+            float(np.clip(delta_m[0] / step_sizes["x"], -1.0, 1.0)),
+            float(np.clip(delta_m[1] / step_sizes["y"], -1.0, 1.0)),
+            float(np.clip(delta_m[2] / step_sizes["z"], -1.0, 1.0)),
+        ]
+        if self.use_gripper:
+            gripper_pos = float(teleop_action.get("gripper.pos", 0.0))
+            if self._prev_gripper_pos is None:
+                gripper_cmd = 1.0
+            else:
+                dg = gripper_pos - self._prev_gripper_pos
+                if dg < -self.gripper_delta_threshold:
+                    gripper_cmd = 0.0  # closing
+                elif dg > self.gripper_delta_threshold:
+                    gripper_cmd = 2.0  # opening
+                else:
+                    gripper_cmd = 1.0  # stay
+            self._prev_gripper_pos = gripper_pos
+            action_list.append(gripper_cmd)
+
+        return torch.tensor(action_list, dtype=torch.float32)
+
+    def reset(self) -> None:
+        self._prev_ee_pos = None
+        self._prev_gripper_pos = None
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
+@ProcessorStepRegistry.register("apply_ee_policy_action_pipeline")
+@dataclass
+class ApplyEEPolicyActionPipelineStep(ProcessorStep):
+    """Run the EE/IK pipeline only when the leader is not commanding joint targets."""
+
+    ee_action_pipeline: Any = None
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        complementary_data = transition.get(TransitionKey.COMPLEMENTARY_DATA, {})
+        if complementary_data.get(LEADER_JOINT_ACTION_KEY, False):
+            return transition
+        if self.ee_action_pipeline is None:
+            raise ValueError("ee_action_pipeline must be provided for ApplyEEPolicyActionPipelineStep")
+        return self.ee_action_pipeline(transition)
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
+        return features
+
+
 @dataclass
 @ProcessorStepRegistry.register("reward_classifier_processor")
 class RewardClassifierProcessorStep(ProcessorStep):
@@ -517,15 +685,26 @@ class RewardClassifierProcessorStep(ProcessorStep):
     terminate_on_success: bool = True
 
     reward_classifier: Any = None
+    classifier_preprocessor: Any = None
 
     def __post_init__(self):
         """Initializes the reward classifier model after the dataclass is created."""
         if self.pretrained_path is not None:
             from lerobot.policies.sac.reward_model.modeling_classifier import Classifier
+            from lerobot.processor import PolicyProcessorPipeline
 
             self.reward_classifier = Classifier.from_pretrained(self.pretrained_path)
             self.reward_classifier.to(self.device)
             self.reward_classifier.eval()
+
+            overrides = {"device_processor": {"device": self.device}}
+            self.classifier_preprocessor = PolicyProcessorPipeline.from_pretrained(
+                self.pretrained_path,
+                config_filename="classifier_preprocessor.json",
+                overrides=overrides,
+                to_transition=batch_to_transition,
+                to_output=transition_to_batch,
+            )
 
     def __call__(self, transition: EnvTransition) -> EnvTransition:
         """
@@ -540,7 +719,7 @@ class RewardClassifierProcessorStep(ProcessorStep):
         """
         new_transition = transition.copy()
         observation = new_transition.get(TransitionKey.OBSERVATION)
-        if observation is None or self.reward_classifier is None:
+        if observation is None or self.reward_classifier is None or self.classifier_preprocessor is None:
             return new_transition
 
         # Extract images from observation
@@ -552,7 +731,14 @@ class RewardClassifierProcessorStep(ProcessorStep):
         # Run reward classifier
         start_time = time.perf_counter()
         with torch.inference_mode():
-            success = self.reward_classifier.predict_reward(images, threshold=self.success_threshold)
+            batch = self.classifier_preprocessor(images)
+            pred_images = [
+                batch[key]
+                for key in self.reward_classifier.config.input_features
+                if key.startswith(OBS_IMAGE)
+            ]
+            probabilities = self.reward_classifier.predict(pred_images).probabilities
+            success = (probabilities > self.success_threshold).float()
 
         classifier_frequency = 1 / (time.perf_counter() - start_time)
 
@@ -560,7 +746,7 @@ class RewardClassifierProcessorStep(ProcessorStep):
         reward = new_transition.get(TransitionKey.REWARD, 0.0)
         terminated = new_transition.get(TransitionKey.DONE, False)
 
-        if math.isclose(success, 1, abs_tol=1e-2):
+        if math.isclose(float(success), 1, abs_tol=1e-2):
             reward = self.success_reward
             if self.terminate_on_success:
                 terminated = True

@@ -195,7 +195,6 @@ def _build_eagle_processor(tokenizer_assets_repo: str = DEFAULT_TOKENIZER_ASSETS
     required = [
         cache_dir / "processor_config.json",
         cache_dir / "preprocessor_config.json",
-        cache_dir / "image_processing_eagle2_5_vl_fast.py",
     ]
     if not all(p.exists() for p in required):
         raise FileNotFoundError(

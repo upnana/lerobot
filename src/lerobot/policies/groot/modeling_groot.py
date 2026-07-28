@@ -90,7 +90,7 @@ class GrootPolicy(PreTrainedPolicy):
         self._action_queue = deque([], maxlen=self.config.n_action_steps)
 
     def get_optim_params(self) -> dict:
-        return self.parameters()
+        return [p for p in self.parameters() if p.requires_grad]
 
     def forward(self, batch: dict[str, Tensor]) -> tuple[Tensor, dict]:
         """Training forward pass.

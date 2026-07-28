@@ -14,6 +14,7 @@
 
 import numbers
 import os
+import socket
 from typing import Any
 
 import numpy as np
@@ -22,13 +23,40 @@ import rerun as rr
 from .constants import OBS_PREFIX, OBS_STR
 
 
-def init_rerun(session_name: str = "lerobot_control_loop") -> None:
-    """Initializes the Rerun SDK for visualizing the control loop."""
-    batch_size = os.getenv("RERUN_FLUSH_NUM_BYTES", "8000")
+def _rerun_viewer_reachable(port: int = 9876, timeout_s: float = 0.35) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout_s):
+            return True
+    except OSError:
+        return False
+
+
+def init_rerun(session_name: str = "lerobot_control_loop", *, port: int | None = None) -> None:
+    """Initializes the Rerun SDK for visualizing the control loop.
+
+    If a viewer is already listening on ``port`` (default 9876), reconnect to it
+    instead of spawning a new one. That way you can keep the Rerun window open
+    across actor restarts, and avoid orphan viewers inheriting camera FDs.
+    """
+    # Small flush so live camera frames appear promptly (default 8000 can look delayed).
+    batch_size = os.getenv("RERUN_FLUSH_NUM_BYTES", "1024")
     os.environ["RERUN_FLUSH_NUM_BYTES"] = batch_size
-    rr.init(session_name)
-    memory_limit = os.getenv("LEROBOT_RERUN_MEMORY_LIMIT", "10%")
-    rr.spawn(memory_limit=memory_limit)
+    # Stable recording id → reconnect keeps writing into the same stream (live view).
+    recording_id = os.getenv("RERUN_RECORDING_ID", "live")
+    rr.init(session_name, recording_id=recording_id)
+    memory_limit = os.getenv("LEROBOT_RERUN_MEMORY_LIMIT", "25%")
+    port = int(os.getenv("RERUN_PORT", str(port if port is not None else 9876)))
+    url = os.getenv("RERUN_CONNECT_URL", f"rerun+http://127.0.0.1:{port}/proxy")
+
+    if _rerun_viewer_reachable(port):
+        rr.connect_grpc(url)
+        print(f"Rerun: reconnecting to existing viewer ({url}), recording_id={recording_id}")
+        print("  In the viewer: select recording 'live' and enable Follow (▶) on the timeline")
+        return
+
+    rr.spawn(port=port, memory_limit=memory_limit, connect=True)
+    print(f"Rerun: spawned new viewer on port {port}, recording_id={recording_id}")
+    print("  Paths: observation.cameras.front / observation.cameras.wrist — turn on Follow")
 
 
 def _is_scalar(x):
@@ -40,6 +68,8 @@ def _is_scalar(x):
 def log_rerun_data(
     observation: dict[str, Any] | None = None,
     action: dict[str, Any] | None = None,
+    *,
+    step: int | None = None,
 ) -> None:
     """
     Logs observation and action data to Rerun for real-time visualization.
@@ -57,7 +87,11 @@ def log_rerun_data(
     Args:
         observation: An optional dictionary containing observation data to log.
         action: An optional dictionary containing action data to log.
+        step: Optional monotonic step index for the timeline (keeps live Follow working).
     """
+    if step is not None:
+        rr.set_time("step", sequence=int(step))
+
     if observation:
         for k, v in observation.items():
             if v is None:
@@ -75,7 +109,9 @@ def log_rerun_data(
                     for i, vi in enumerate(arr):
                         rr.log(f"{key}_{i}", rr.Scalars(float(vi)))
                 else:
-                    rr.log(key, rr.Image(arr), static=True)
+                    # Live camera streams must not be static, otherwise the viewer
+                    # barely updates during teleop/recording.
+                    rr.log(key, rr.Image(arr))
 
     if action:
         for k, v in action.items():

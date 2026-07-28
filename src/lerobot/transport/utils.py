@@ -140,8 +140,23 @@ def bytes_to_python_object(buffer: bytes) -> Any:
 def bytes_to_transitions(buffer: bytes) -> list[Transition]:
     bytes_buffer = io.BytesIO(buffer)
     bytes_buffer.seek(0)
-    transitions = torch.load(bytes_buffer, weights_only=True)
-    return transitions
+    # Actor may pickle TeleopEvents enum keys inside complementary_info.
+    # PyTorch 2.6+ defaults weights_only=True and rejects unknown globals.
+    try:
+        from lerobot.teleoperators.utils import TeleopEvents
+
+        torch.serialization.add_safe_globals([TeleopEvents])
+    except Exception:
+        logging.debug("Could not register TeleopEvents as torch safe global", exc_info=True)
+    try:
+        return torch.load(bytes_buffer, weights_only=True)
+    except pickle.UnpicklingError:
+        bytes_buffer.seek(0)
+        logging.warning(
+            "bytes_to_transitions: weights_only=True failed; "
+            "retrying with weights_only=False (trusted local actor IPC)"
+        )
+        return torch.load(bytes_buffer, weights_only=False)
 
 
 def transitions_to_bytes(transitions: list[Transition]) -> bytes:

@@ -54,7 +54,7 @@ class GrootConfig(PreTrainedConfig):
     # Groot-specific model parameters (from groot_finetune_script.py)
 
     # Path or HuggingFace model ID for the base Groot model
-    base_model_path: str = "nvidia/GR00T-N1.5-3B"
+    base_model_path: str = "/home/rxn/lerobot/src/lerobot/GR00T-basemodel"
 
     # HF repo ID (or local path) that hosts vocab.json and merges.txt for Eagle tokenizer.
     tokenizer_assets_repo: str = "lerobot/eagle2hg-processor-groot-n1p5"

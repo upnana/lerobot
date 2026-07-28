@@ -138,6 +138,15 @@ class EagleBackbone(nn.Module):
         }
         del eagle_input["image_sizes"]
 
+        if eagle_input.get("image_flags", None) is None:
+            pixel_values = eagle_input.get("pixel_values", None)
+            if pixel_values is not None:
+                eagle_input["image_flags"] = torch.ones(
+                    (pixel_values.shape[0], 1),
+                    dtype=torch.long,
+                    device=pixel_values.device,
+                )
+
         eagle_output = self.eagle_model(**eagle_input, output_hidden_states=True, return_dict=True)
         eagle_features = eagle_output.hidden_states[self.select_layer]
 
@@ -366,7 +375,10 @@ class GR00TN15(PreTrainedModel):
             local_model_path = pretrained_model_name_or_path
 
         pretrained_model = super().from_pretrained(
-            local_model_path, local_model_path=local_model_path, **kwargs
+            local_model_path,
+            local_model_path=local_model_path,
+            ignore_mismatched_sizes=True,
+            **kwargs
         )
 
         pretrained_model.backbone.set_trainable_parameters(tune_visual=tune_visual, tune_llm=tune_llm)

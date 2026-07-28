@@ -590,11 +590,11 @@ class MotorsBus(abc.ABC):
             ...     # Safe operations here
             ...     pass
         """
-        self.disable_torque(motors)
+        self.disable_torque(motors, num_retry=5)
         try:
             yield
         finally:
-            self.enable_torque(motors)
+            self.enable_torque(motors, num_retry=5)
 
     def set_timeout(self, timeout_ms: int | None = None):
         """Change the packet timeout used by the SDK.
@@ -710,6 +710,18 @@ class MotorsBus(abc.ABC):
 
         return homing_offsets
 
+    def _read_present_positions(
+        self, motors: list[str], *, normalize: bool = False, num_retry: int = 5
+    ) -> dict[str, Value]:
+        """Read Present_Position for calibration; sequential fallback if sync_read fails."""
+        try:
+            return self.sync_read("Present_Position", motors, normalize=normalize, num_retry=num_retry)
+        except ConnectionError:
+            return {
+                motor: self.read("Present_Position", motor, normalize=normalize, num_retry=num_retry)
+                for motor in motors
+            }
+
     @abc.abstractmethod
     def _get_half_turn_homings(self, positions: dict[NameOrID, Value]) -> dict[NameOrID, Value]:
         pass
@@ -738,13 +750,13 @@ class MotorsBus(abc.ABC):
         elif not isinstance(motors, list):
             raise TypeError(motors)
 
-        start_positions = self.sync_read("Present_Position", motors, normalize=False)
+        start_positions = self._read_present_positions(motors, normalize=False)
         mins = start_positions.copy()
         maxes = start_positions.copy()
 
         user_pressed_enter = False
         while not user_pressed_enter:
-            positions = self.sync_read("Present_Position", motors, normalize=False)
+            positions = self._read_present_positions(motors, normalize=False)
             mins = {motor: min(positions[motor], min_) for motor, min_ in mins.items()}
             maxes = {motor: max(positions[motor], max_) for motor, max_ in maxes.items()}
 

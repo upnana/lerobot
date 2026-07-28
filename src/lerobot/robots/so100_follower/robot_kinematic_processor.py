@@ -220,13 +220,12 @@ class EEBoundsAndSafety(RobotActionProcessorStep):
         # Clip position
         pos = np.clip(pos, self.end_effector_bounds["min"], self.end_effector_bounds["max"])
 
-        # Check for jumps in position
+        # Clip large jumps instead of crashing teleop/recording sessions.
         if self._last_pos is not None:
             dpos = pos - self._last_pos
             n = float(np.linalg.norm(dpos))
             if n > self.max_ee_step_m and n > 0:
                 pos = self._last_pos + dpos * (self.max_ee_step_m / n)
-                raise ValueError(f"EE jump {n:.3f}m > {self.max_ee_step_m}m")
 
         self._last_pos = pos
 
@@ -516,6 +515,45 @@ class ForwardKinematicsJointsToEE(ProcessorStep):
             features = self.joints_to_ee_action_processor.transform_features(features)
         if features[PipelineFeatureType.OBSERVATION] is not None:
             features = self.joints_to_ee_observation_processor.transform_features(features)
+        return features
+
+
+@ProcessorStepRegistry.register("clip_joint_positions")
+@dataclass
+class ClipJointPositions(ProcessorStep):
+    """
+    Clip named joint targets in the action dict after IK / leader teleop.
+
+    Example bounds (degrees when robot.use_degrees=true):
+        {"wrist_roll": {"min": -20.0, "max": 20.0}}
+    """
+
+    joint_position_bounds: dict[str, dict[str, float]] | None = None
+
+    def __call__(self, transition: EnvTransition) -> EnvTransition:
+        if not self.joint_position_bounds:
+            return transition
+
+        action = transition.get(TransitionKey.ACTION)
+        if not isinstance(action, dict):
+            return transition
+
+        new_transition = dict(transition)
+        action = dict(action)
+        for joint_name, bounds in self.joint_position_bounds.items():
+            key = joint_name if joint_name.endswith(".pos") else f"{joint_name}.pos"
+            if key not in action or action[key] is None:
+                continue
+            lo = float(bounds.get("min", -np.inf))
+            hi = float(bounds.get("max", np.inf))
+            action[key] = float(np.clip(float(action[key]), lo, hi))
+
+        new_transition[TransitionKey.ACTION] = action
+        return new_transition
+
+    def transform_features(
+        self, features: dict[PipelineFeatureType, dict[str, PolicyFeature]]
+    ) -> dict[PipelineFeatureType, dict[str, PolicyFeature]]:
         return features
 
 

@@ -1,0 +1,4 @@
+{
+  "observation.images.front": [20, 0, 100, 100],
+  "observation.images.wrist": [10, 28, 110, 100]
+}

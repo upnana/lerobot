@@ -1,0 +1,46 @@
+{
+  "dataset": {
+    "repo_id": "my_rl/push_black_block_reward_classifier",
+    "root": "/home/rxn/datasets/hilserl_push_black_block_reward_classifier",
+    "use_imagenet_stats": false
+  },
+  "policy": {
+    "type": "reward_classifier",
+    "model_name": "helper2424/resnet10",
+    "model_type": "cnn",
+    "num_cameras": 2,
+    "num_classes": 2,
+    "hidden_dim": 256,
+    "dropout_rate": 0.1,
+    "learning_rate": 0.0001,
+    "device": "cuda",
+    "use_amp": false,
+    "input_features": {
+      "observation.images.front": {
+        "type": "VISUAL",
+        "shape": [3, 128, 128]
+      },
+      "observation.images.wrist": {
+        "type": "VISUAL",
+        "shape": [3, 128, 128]
+      }
+    },
+    "push_to_hub": false
+  },
+  "output_dir": "/home/rxn/lerobot/outputs/train/reward_classifier_so101_push_black_block",
+  "job_name": "reward_classifier_so101_push_black_block",
+  "batch_size": 32,
+  "num_workers": 4,
+  "steps": 3000,
+  "log_freq": 50,
+  "eval_freq": 0,
+  "save_freq": 500,
+  "save_checkpoint": true,
+  "seed": 1000,
+  "resume": false,
+  "use_policy_training_preset": true,
+  "wandb": {
+    "enable": false,
+    "project": "reward-classifier"
+  }
+}

@@ -115,7 +115,12 @@ class TrainPipelineConfig(HubMixin):
             else:
                 self.job_name = f"{self.env.type}_{self.policy.type}"
 
-        if not self.resume and isinstance(self.output_dir, Path) and self.output_dir.is_dir():
+        if (
+            not self.resume
+            and not getattr(self, "allow_existing_output_dir", False)
+            and isinstance(self.output_dir, Path)
+            and self.output_dir.is_dir()
+        ):
             raise FileExistsError(
                 f"Output directory {self.output_dir} already exists and resume is {self.resume}. "
                 f"Please change your output directory so that {self.output_dir} is not overwritten."
@@ -210,3 +215,5 @@ class TrainRLServerPipelineConfig(TrainPipelineConfig):
     # NOTE: In RL, we don't need an offline dataset
     # TODO: Make `TrainPipelineConfig.dataset` optional
     dataset: DatasetConfig | None = None  # type: ignore[assignment] # because the parent class has made it's type non-optional
+    # Actor joins a run started by the learner, which creates output_dir first.
+    allow_existing_output_dir: bool = False

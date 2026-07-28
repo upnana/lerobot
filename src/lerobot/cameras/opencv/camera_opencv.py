@@ -164,24 +164,33 @@ class OpenCVCamera(Camera):
         # blocking in multi-threaded applications, especially during data collection.
         cv2.setNumThreads(1)
 
-        self.videocapture = cv2.VideoCapture(self.index_or_path)
+        try:
+            self.videocapture = cv2.VideoCapture(self.index_or_path, cv2.CAP_V4L2)
 
-        if not self.videocapture.isOpened():
-            self.videocapture.release()
-            self.videocapture = None
-            raise ConnectionError(
-                f"Failed to open {self}.Run `lerobot-find-cameras opencv` to find available cameras."
-            )
+            if not self.videocapture.isOpened():
+                raise ConnectionError(
+                    f"Failed to open {self}.Run `lerobot-find-cameras opencv` to find available cameras."
+                )
 
-        self._configure_capture_settings()
+            self._configure_capture_settings()
 
-        if warmup:
-            start_time = time.time()
-            while time.time() - start_time < self.warmup_s:
-                self.read()
-                time.sleep(0.1)
+            if warmup:
+                start_time = time.time()
+                got_frame = False
+                while time.time() - start_time < self.warmup_s:
+                    try:
+                        self.read()
+                        got_frame = True
+                        break
+                    except RuntimeError:
+                        time.sleep(0.1)
+                if not got_frame:
+                    raise ConnectionError(f"{self} failed to read a frame during warmup")
 
-        logger.info(f"{self} connected.")
+            logger.info(f"{self} connected.")
+        except Exception:
+            self._force_disconnect()
+            raise
 
     def _configure_capture_settings(self) -> None:
         """
@@ -463,7 +472,7 @@ class OpenCVCamera(Camera):
         if self.stop_event is None:
             raise RuntimeError(f"{self}: stop_event is not initialized before starting read loop.")
 
-        while not self.stop_event.is_set():
+        while self.stop_event is not None and not self.stop_event.is_set():
             try:
                 color_image = self.read()
 
@@ -479,9 +488,9 @@ class OpenCVCamera(Camera):
     def _start_read_thread(self) -> None:
         """Starts or restarts the background read thread if it's not running."""
         if self.thread is not None and self.thread.is_alive():
-            self.thread.join(timeout=0.1)
-        if self.stop_event is not None:
-            self.stop_event.set()
+            if self.stop_event is not None:
+                self.stop_event.set()
+            self.thread.join(timeout=3.0)
 
         self.stop_event = Event()
         self.thread = Thread(target=self._read_loop, args=(), name=f"{self}_read_loop")
@@ -493,13 +502,18 @@ class OpenCVCamera(Camera):
         if self.stop_event is not None:
             self.stop_event.set()
 
+        # Release capture first so a blocked videocapture.read() can exit.
+        if self.videocapture is not None:
+            self.videocapture.release()
+            self.videocapture = None
+
         if self.thread is not None and self.thread.is_alive():
-            self.thread.join(timeout=2.0)
+            self.thread.join(timeout=3.0)
 
         self.thread = None
         self.stop_event = None
 
-    def async_read(self, timeout_ms: float = 1000) -> NDArray[Any]:
+    def async_read(self, timeout_ms: float = 1000, allow_stale: bool = False) -> NDArray[Any]:
         """
         Reads the latest available frame asynchronously.
 
@@ -510,6 +524,9 @@ class OpenCVCamera(Camera):
         Args:
             timeout_ms (float): Maximum time in milliseconds to wait for a frame
                 to become available. Defaults to 200ms (0.2 seconds).
+            allow_stale (bool): If True and the wait times out, return the most
+                recent cached frame instead of raising TimeoutError. Useful during
+                teleop recording so a slow camera does not block the control loop.
 
         Returns:
             np.ndarray: The latest captured frame as a NumPy array in the format
@@ -527,6 +544,11 @@ class OpenCVCamera(Camera):
             self._start_read_thread()
 
         if not self.new_frame_event.wait(timeout=timeout_ms / 1000.0):
+            if allow_stale:
+                with self.frame_lock:
+                    if self.latest_frame is not None:
+                        logger.debug(f"{self} async_read timed out, using stale frame")
+                        return self.latest_frame.copy()
             thread_alive = self.thread is not None and self.thread.is_alive()
             raise TimeoutError(
                 f"Timed out waiting for frame from camera {self} after {timeout_ms} ms. "
@@ -542,6 +564,26 @@ class OpenCVCamera(Camera):
 
         return frame
 
+    def _force_disconnect(self) -> None:
+        """Release camera resources without raising if already disconnected."""
+        if self.stop_event is not None:
+            self.stop_event.set()
+
+        if self.videocapture is not None:
+            try:
+                self.videocapture.release()
+            except Exception:
+                pass
+            self.videocapture = None
+
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+
+        self.thread = None
+        self.stop_event = None
+        self.latest_frame = None
+        self.new_frame_event.clear()
+
     def disconnect(self) -> None:
         """
         Disconnects from the camera and cleans up resources.
@@ -555,11 +597,22 @@ class OpenCVCamera(Camera):
         if not self.is_connected and self.thread is None:
             raise DeviceNotConnectedError(f"{self} not connected.")
 
-        if self.thread is not None:
-            self._stop_read_thread()
-
-        if self.videocapture is not None:
-            self.videocapture.release()
-            self.videocapture = None
-
+        self._force_disconnect()
         logger.info(f"{self} disconnected.")
+
+    def reconnect(self) -> None:
+        """Release and reopen the camera after I/O failures."""
+        logger.warning(f"{self} reconnecting after read failure")
+        self._force_disconnect()
+        time.sleep(1.0)
+        last_err = None
+        for attempt in range(3):
+            self._force_disconnect()
+            try:
+                self.connect(warmup=True)
+                return
+            except (ConnectionError, TimeoutError, RuntimeError, DeviceAlreadyConnectedError) as err:
+                last_err = err
+                logger.warning(f"{self} reconnect attempt {attempt + 1}/3 failed: {err}")
+                time.sleep(1.0)
+        raise ConnectionError(f"{self} reconnect failed after 3 attempts") from last_err

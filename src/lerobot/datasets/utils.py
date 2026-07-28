@@ -384,6 +384,85 @@ def load_episodes(local_dir: Path) -> datasets.Dataset:
     return episodes
 
 
+def is_parquet_readable(path: Path) -> bool:
+    try:
+        pq.read_metadata(path)
+        return True
+    except Exception:
+        return False
+
+
+def validate_dataset_for_resume(root: str | Path) -> tuple[bool, str]:
+    """Check whether a local dataset can be resumed without contacting the Hub."""
+    root = Path(root)
+    if not (root / INFO_PATH).exists():
+        return False, f"missing {INFO_PATH}"
+
+    parquet_files = sorted((root / DATA_DIR).rglob("*.parquet"))
+    if not parquet_files:
+        return False, "no data parquet files found"
+
+    for parquet_file in parquet_files:
+        if not is_parquet_readable(parquet_file):
+            return (
+                False,
+                f"corrupted parquet at {parquet_file} (recording crashed before finalize). "
+                "Use FRESH=1 to delete and restart.",
+            )
+
+    return True, "ok"
+
+
+def repair_episodes_metadata_if_missing(root: str | Path) -> bool:
+    """Rebuild meta/episodes from data parquet when episode metadata was never flushed."""
+    root = Path(root)
+    if any((root / EPISODES_DIR).rglob("*.parquet")):
+        return False
+
+    info = load_info(root)
+    fps = info["fps"]
+    video_keys = [key for key, ft in info["features"].items() if ft["dtype"] == "video"]
+    tasks_df = load_tasks(root)
+    task_index_to_name = {int(row.task_index): task_name for task_name, row in tasks_df.iterrows()}
+
+    data_frames = [pd.read_parquet(path) for path in sorted((root / DATA_DIR).rglob("*.parquet"))]
+    data_df = pd.concat(data_frames, ignore_index=True)
+
+    episodes = []
+    dataset_from_index = 0
+    for episode_index in sorted(data_df["episode_index"].unique()):
+        episode_df = data_df[data_df["episode_index"] == episode_index]
+        episode_length = len(episode_df)
+        task_indices = sorted({int(task_index) for task_index in episode_df["task_index"].unique()})
+        episode_tasks = [task_index_to_name[task_index] for task_index in task_indices]
+
+        episode_row = {
+            "episode_index": int(episode_index),
+            "meta/episodes/chunk_index": 0,
+            "meta/episodes/file_index": 0,
+            "data/chunk_index": 0,
+            "data/file_index": 0,
+            "dataset_from_index": dataset_from_index,
+            "dataset_to_index": dataset_from_index + episode_length,
+            "tasks": episode_tasks,
+            "length": episode_length,
+        }
+
+        from_timestamp = dataset_from_index / fps
+        to_timestamp = (dataset_from_index + episode_length) / fps
+        for video_key in video_keys:
+            episode_row[f"videos/{video_key}/chunk_index"] = 0
+            episode_row[f"videos/{video_key}/file_index"] = 0
+            episode_row[f"videos/{video_key}/from_timestamp"] = from_timestamp
+            episode_row[f"videos/{video_key}/to_timestamp"] = to_timestamp
+
+        episodes.append(episode_row)
+        dataset_from_index += episode_length
+
+    write_episodes(Dataset.from_list(episodes), root)
+    return True
+
+
 def load_image_as_numpy(
     fpath: str | Path, dtype: np.dtype = np.float32, channel_first: bool = True
 ) -> np.ndarray:
