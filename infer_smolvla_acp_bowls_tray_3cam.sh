@@ -27,6 +27,9 @@
 #   CUDA_VISIBLE_DEVICES=0 MIN_FREE_MIB=2000 bash ... 80000   # 训练占卡时放宽显存门槛
 #
 # 按 v2 经验优先试 50k–80k，不要默认 last。
+#
+# 录完默认叠 value 曲线到视频（OVERLAY_VALUE=1）。
+# 一条命令入口: bash /home/rxn/lerobot/infer_overlay_bowls_tray_3cam.sh 80000
 # =============================================================================
 set -euo pipefail
 
@@ -50,10 +53,12 @@ fi
 
 PROJECT_ROOT="${PROJECT_ROOT:-/home/rxn/lerobot/Evo-RL}"
 CONDA_ENV="${CONDA_ENV:-evo-rl}"
-TRAIN_ROOT="${TRAIN_ROOT:-${PROJECT_ROOT}/outputs/train/smolvla_acp_bowls_tray_3cam}"
-DATA_ROOT="${DATA_ROOT:-/home/rxn/datasets/evo_rl_bowls_stack_lipstick_tissue}"
-DATA_REPO="${DATA_REPO:-my_bimanual/evo_rl_bowls_stack_lipstick_tissue}"
-EVAL_ROOT="${EVAL_ROOT:-${PROJECT_ROOT}/outputs/eval/smolvla_acp_bowls_tray_3cam}"
+TRAIN_ROOT="${TRAIN_ROOT:-${PROJECT_ROOT}/outputs/train/smolvla_acp_bowls_tray_3cam_v2}"
+DATA_ROOT="${DATA_ROOT:-/home/rxn/datasets/evo_rl_bowls_stack_lipstick_tissue_v2}"
+DATA_REPO="${DATA_REPO:-my_bimanual/evo_rl_bowls_stack_lipstick_tissue_v2}"
+EVAL_ROOT="${EVAL_ROOT:-${PROJECT_ROOT}/outputs/eval/smolvla_acp_bowls_tray_3cam_v2}"
+# After record: run value-infer + burn value curve onto videos (1=yes)
+OVERLAY_VALUE="${OVERLAY_VALUE:-1}"
 
 # Resolve checkpoint
 if [ "${STEP}" = "last" ]; then
@@ -345,3 +350,9 @@ echo "=============================="
 echo "Inference finished: ${EVAL_DATA_ROOT}"
 echo "再试: bash $0 50000   或   PRESET=n10 bash $0 80000"
 echo "=============================="
+
+if [ "${OVERLAY_VALUE}" = "1" ]; then
+  echo "Overlaying value curve onto recorded videos..."
+  bash /home/rxn/lerobot/overlay_value_on_eval.sh "${EVAL_DATA_ROOT}"
+  echo "Value-overlay videos: ${EVAL_DATA_ROOT}_value_viz/ (see */viz/*.mp4)"
+fi
