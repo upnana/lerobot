@@ -47,12 +47,34 @@ Pass / 叠碗等文档里的 148 = **(ref) 蓝块引用**，不是该任务重�
 | **蓝块→黄盘** | **120 s** | **正式表** | SmolVLA **~4/5** @~20ep | 竖放无数据；短边夹持 |
 | HIL-SERL 推黑块 | — | — | 日志~76%（含人工 s） | ≠零干预 SR |
 | **Pass 胶带** | **65 s** | **(ref) ~148** | informal **~2/3** | **右臂抓不准/空抓**（非交接） |
-| **叠碗 黄→棕→白** | **150 s** | **(ref) ~148** | **2/3** @ckpt120k | 白碗末段；阶段门控；过早松爪 |
-| Evo-RL 零食+叠碗 / 碗+口红纸巾 | 对照 ~**110 s** | 未系统测 | **无正式整任务 SR** | 口红；假进度；后期 hold |
+| **叠碗 黄→棕→白** | **150 s** | **(ref) ~148** | **>70%**（ckpt~120k 甜区） | 白碗末段；阶段门控；过早松爪 |
+| **Evo-RL** 叠碗+口红/纸巾 | 对照 ~**110 s** | 未系统测 | **分阶段**（见下） | 纸巾/口红入 tray；假进度；后期 hold |
 | 叠积木 2cam（旧日志） | 67–240 s | — | 分析 **0/8** 全成功 | 黑层；撞塔；prompt 错配 |
 | **叠积木 3cam** | 常用 **180 s** | ~**143** / queue **1.2** | 会话 **~4/5**；后 **>50%** | 时限/黑层；场景协议 |
 
 GitHub：[`lerobot_lab` 本笔记路径](https://github.com/upnana/lerobot_lab/blob/main/notes/all-experiments-sr-latency-summary.md) · [pass_tape](https://github.com/upnana/pass_tape) · [stack_bowls](https://github.com/upnana/stack_bowls)
+
+### 2.1 叠碗 SR（独立 SmolVLA 任务）
+
+| 项 | 值 |
+|----|-----|
+| 任务 | 黄→棕→白 叠稳，零干预 |
+| 报告 SR | **>70%**（甜区约 data-epoch 20 / ckpt `120000`） |
+| 早期小样本 | 笔记曾记 2/3；后续评测按 **>70%** 报 |
+| 仍见失败 | 白碗末段、阶段门控、示教过早松爪 |
+
+### 2.2 Evo-RL 分阶段 SR（不要报一个笼统整任务数）
+
+长程任务 = **subtask1 叠碗** + **纸巾/口红入黄 tray**。整任务正式 SR 未做 \(N\ge10\)；按子任务：
+
+| 子任务 | 真机表现 | SR 口径 |
+|--------|----------|---------|
+| **① 叠碗**（黄→棕→白 → 白盘） | **能成功**，顺序与堆叠大体学会 | 前半程可用 |
+| **② 纸巾入黄 tray** | **做不完整** | **SR 很低** |
+| **③ 口红入黄 tray** | **做不完整**（够到/试抓多，抓稳放稳少） | **SR 很低** |
+| 整任务 | 前半 OK、后半挂 | **不报单一高 SR** |
+
+面试一句：Evo-RL 上 **subtask1 叠碗能成**；**纸巾和口红入盘 SR 很低**——瓶颈在后半精细抓放，不是不会叠碗。
 
 ---
 
@@ -85,17 +107,17 @@ GitHub：[`lerobot_lab` 本笔记路径](https://github.com/upnana/lerobot_lab/b
 4. 3cam 训满 → 悬停（过拟合）；用中期 **60–80k**
 
 ### 叠碗
-1. 白碗末段放置  
-2. 阶段门控：棕未上黄 → 白也不往黄上放  
-3. 示教过早松爪被克隆  
-4. 甜区 **ckpt 120k**，非训满
+1. 报告 SR **>70%**（甜区 ckpt ~120k）  
+2. 仍见：白碗末段放置、阶段门控（棕未上黄 → 白也不放）、过早松爪克隆  
 
 ### Evo-RL / ACP
-1. 口红抓放是长程瓶颈  
-2. Value **假进度**（靠近/伸爪抬 V，任务未完成）  
-3. 数据少时 hold；中期有伸手；**≥150k 易塌回 hold**  
-4. HITL 犹豫 → 策略变磨蹭  
-5. 部署默认 **without tag**（`n10_acp_none`）；硬喂 positive 无整任务增益
+1. **Subtask1 叠碗：能成功**  
+2. **纸巾 / 口红入黄 tray：SR 很低**（长程后半瓶颈）  
+3. Value **假进度**（未抓住口红时 \(V\) 仍抬）  
+4. 数据少时 hold；中期有伸手；**≥150k 易塌回 hold**  
+5. HITL 犹豫 → 策略变磨蹭  
+6. 部署默认 **without tag**；硬喂 positive 无整任务增益  
+7. 勿把 demo 标注 success% 说成 policy SR；勿只报整任务成/败
 
 ### 叠积木
 1. 第三层黑完不成 / 撞塔  
@@ -124,10 +146,10 @@ GitHub：[`lerobot_lab` 本笔记路径](https://github.com/upnana/lerobot_lab/b
 
 1. Latency 标准答案：**73 / 148 / 158 ms**（GR00T / SmolVLA / PI0.5）；**无 PI0 测值**。  
 2. Infer time = 任务时限，不是 latency。  
-3. 失败在**最难子技能**（右臂抓胶带、白碗、口红），不是「以为难」的那步（交接）。  
+3. 失败在**最难子技能**：Pass=右臂抓；独立叠碗虽 **>70%** 仍卡白碗末段；Evo=**纸巾/口红低 SR**（叠碗子任务已会）。  
 4. 视觉 > 语言；OOD 颜色杀抓取。  
-5. 双臂/长程：**中期 ckpt** 优于训满；Evo：**without ACP tag**。  
-6. SR 多 informal；E2E（相机→电机）未系统测。
+5. 双臂/长程：**中期 ckpt** 优于训满；Evo：**without ACP tag**；报 **分阶段 SR**。  
+6. 诚实边界：多数整任务 SR 仍 informal；E2E latency 未系统测。
 
 ---
 
@@ -145,14 +167,15 @@ SmolVLA 3cam stack (separate): ~143 ms first / ~1.2 ms queued
 Infer time:
   Pass 65s | Blue 120s | Bowls 150s | Stack3 180s | Evo A/B ~110s
 
-SR (informal unless noted):
-  Blue ~4/5 | Pass ~2/3 | Bowls 2/3@120k | Stack3 3cam ~4/5→>50%
-  Evo: no formal full-task SR | HIL log 76% ≠ zero-intervention
+SR:
+  Blue ~4/5 | Pass ~2/3 | Stack bowls >70% @~120k
+  Evo: subtask1 bowls OK | tissue+lipstick SR very low | no single full-task SR
+  Stack3 3cam ~4/5→>50% | HIL log 76% ≠ zero-intervention
 
 Main fail:
   Pass = right-arm grasp (NOT handover)
-  Bowls = white last + staging + early release
-  Evo = lipstick + fake value progress + late hold
+  Bowls = white last / staging / early release (still >70% overall)
+  Evo = tissue & lipstick into tray (bowls subtask works)
   Blue OOD = color / upright
 ```
 
